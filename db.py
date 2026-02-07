@@ -77,23 +77,7 @@ def init_db(db_path=None):
 
 def insert_card(conn, card_data):
     """Insert or update a card from Scryfall data."""
-    conn.execute("""
-        INSERT INTO cards (scryfall_id, name, color_identity, cmc, mana_cost,
-                          type_line, oracle_text, keywords, is_land, is_creature, categories)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
-            color_identity=excluded.color_identity,
-            cmc=excluded.cmc,
-            mana_cost=excluded.mana_cost,
-            type_line=excluded.type_line,
-            oracle_text=excluded.oracle_text,
-            keywords=excluded.keywords,
-            is_land=excluded.is_land,
-            is_creature=excluded.is_creature,
-            categories=excluded.categories
-    """, (
-        card_data["scryfall_id"],
-        card_data["name"],
+    params = (
         json.dumps(card_data.get("color_identity", [])),
         card_data.get("cmc", 0),
         card_data.get("mana_cost", ""),
@@ -103,7 +87,24 @@ def insert_card(conn, card_data):
         1 if card_data.get("is_land", False) else 0,
         1 if card_data.get("is_creature", False) else 0,
         json.dumps(card_data.get("categories", [])),
-    ))
+    )
+
+    # Try to update existing card by name first (keep existing scryfall_id to avoid FK issues)
+    result = conn.execute("""
+        UPDATE cards SET
+            color_identity=?, cmc=?, mana_cost=?,
+            type_line=?, oracle_text=?, keywords=?,
+            is_land=?, is_creature=?, categories=?
+        WHERE name = ?
+    """, params + (card_data["name"],))
+
+    if result.rowcount == 0:
+        # Card doesn't exist yet, insert it
+        conn.execute("""
+            INSERT OR IGNORE INTO cards (scryfall_id, name, color_identity, cmc, mana_cost,
+                              type_line, oracle_text, keywords, is_land, is_creature, categories)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (card_data["scryfall_id"], card_data["name"]) + params)
 
 
 def insert_deck(conn, deck_data):
@@ -128,13 +129,19 @@ def insert_deck(conn, deck_data):
     deck_id = cursor.lastrowid
 
     for card_entry in deck_data.get("cards", []):
+        # Look up the actual scryfall_id from the cards table to avoid FK mismatches
+        card_row = conn.execute(
+            "SELECT scryfall_id FROM cards WHERE name = ?", (card_entry["name"],)
+        ).fetchone()
+        scryfall_id = card_row["scryfall_id"] if card_row else card_entry.get("scryfall_id")
+
         conn.execute("""
             INSERT INTO deck_cards (deck_id, card_name, scryfall_id, quantity, board)
             VALUES (?, ?, ?, ?, ?)
         """, (
             deck_id,
             card_entry["name"],
-            card_entry.get("scryfall_id"),
+            scryfall_id,
             card_entry.get("quantity", 1),
             card_entry.get("board", "mainboard"),
         ))

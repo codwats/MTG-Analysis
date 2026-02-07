@@ -125,8 +125,9 @@ def cmd_import(args):
             else:
                 not_found.append(card_entry["name"])
                 # Create a stub card entry so the database is consistent
+                stub_id = f"stub-{card_entry['name'][:50]}"
                 stub = {
-                    "scryfall_id": f"stub-{card_entry['name'][:50]}",
+                    "scryfall_id": stub_id,
                     "name": card_entry["name"],
                     "color_identity": [],
                     "cmc": 0,
@@ -139,6 +140,7 @@ def cmd_import(args):
                     "categories": ["other"],
                 }
                 insert_card(conn, stub)
+                card_entry["scryfall_id"] = stub_id
 
         if not_found:
             print(f"  WARNING: {len(not_found)} cards not found: {', '.join(not_found[:5])}")
