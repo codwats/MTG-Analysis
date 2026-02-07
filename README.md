@@ -83,39 +83,55 @@ Re-import already imported decks with `--force`. Run LLM categorization during i
 
 ### Analysis commands
 
+Most commands accept `-c` for color identity and `-b` for bracket filtering.
+
+By default, `-c G` matches **only mono-Green** decks. Add `--include` to match **any deck containing Green** (RG, WRG, UG, etc.):
+
+```bash
+python3 cli.py staples -c G             # mono-Green only (2 decks)
+python3 cli.py staples -c G --include   # all decks with Green (27 decks)
+python3 cli.py staples -c RG --include  # all decks with both Red and Green
+```
+
 ```bash
 # Database overview
 python3 cli.py summary
 
-# List imported decks (with optional filters)
+# List imported decks
 python3 cli.py list
-python3 cli.py list -c UR -b 2
+python3 cli.py list -c R --include     # all decks containing red
 
 # Staples by color identity and bracket
 python3 cli.py staples -c UR -b 2
+python3 cli.py staples -c G --include  # green staples across all green decks
 
 # Mana curve analysis
 python3 cli.py curve -c WBG
-python3 cli.py curve --cmc 4        # filter by commander CMC
+python3 cli.py curve --cmc 4           # filter by commander CMC
+
+# Commander CMC vs curve correlation
+python3 cli.py cmc-curve -c G --include           # how curves shift with commander cost
+python3 cli.py cmc-curve -c G --include --spells   # also show top spells at each CMC slot
+python3 cli.py cmc-curve --spells --top-n 3        # across all decks, 3 spells per slot
 
 # Category distribution (how many ramp/draw/removal slots)
 python3 cli.py categories -c BG -b 2
 
 # Detect card packages (cards that appear together)
-python3 cli.py packages -c G --threshold 0.7
+python3 cli.py packages -c G --include --threshold 0.7
 
 # Compare two bracket levels
-python3 cli.py compare -c UB -b 2 3
+python3 cli.py compare -c G --include 2 3
 
 # Ramp analysis by commander CMC
-python3 cli.py ramp --cmc 5
+python3 cli.py ramp 5
 
 # Run LLM categorization on uncategorized cards
 python3 cli.py categorize
-python3 cli.py categorize --dry-run   # preview without API calls
+python3 cli.py categorize --dry-run    # preview without API calls
 
 # View or override card categories
 python3 cli.py tag show "Sol Ring"
-python3 cli.py tag set "Sol Ring" ramp staple
+python3 cli.py tag set "Sol Ring" ramp,draw
 python3 cli.py tag list ramp
 ```

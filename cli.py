@@ -16,12 +16,28 @@ from analyzer import (
     find_packages,
     compare_brackets,
     get_ramp_by_commander_cmc,
+    get_cmc_curve_correlation,
     list_decks,
     get_db_summary,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DECKS_DIR = os.path.join(BASE_DIR, "decks")
+
+
+def _resolve_color_mode(args):
+    """Determine color matching mode from CLI args."""
+    if hasattr(args, "include") and args.include:
+        return "contains"
+    return "exact"
+
+
+def _add_color_args(parser):
+    """Add standard color identity args to a subparser."""
+    parser.add_argument("-c", "--colors", help="Color identity (e.g., UR, WBG)")
+    parser.add_argument("--include", action="store_true",
+                        help="Match any deck containing these colors (e.g., -c G --include matches RG, WBG, etc.)")
+    parser.add_argument("-b", "--bracket", type=int, help="Bracket level")
 
 
 def cmd_init(args):
@@ -171,7 +187,8 @@ def cmd_list(args):
     """List decks in the database."""
     conn = init_db()
     colors = list(args.colors.upper()) if args.colors else None
-    decks = list_decks(conn, color_identity=colors, bracket=args.bracket)
+    color_mode = _resolve_color_mode(args)
+    decks = list_decks(conn, color_identity=colors, bracket=args.bracket, color_mode=color_mode)
 
     if not decks:
         print("No decks found matching filters.")
@@ -210,14 +227,16 @@ def cmd_staples(args):
     """Find staple cards for a color identity + bracket."""
     conn = init_db()
     colors = list(args.colors.upper()) if args.colors else None
-    result = get_top_cards(conn, color_identity=colors, bracket=args.bracket, limit=args.limit)
+    color_mode = _resolve_color_mode(args)
+    result = get_top_cards(conn, color_identity=colors, bracket=args.bracket, limit=args.limit, color_mode=color_mode)
 
     if "error" in result:
         print(f"Error: {result['error']}")
         return
 
     bracket_str = f"Bracket {result['bracket']}" if result['bracket'] else ""
-    print(f"\n=== Top Cards: {result['color_name']} {bracket_str} ===")
+    mode_str = " (includes)" if _resolve_color_mode(args) == "contains" else ""
+    print(f"\n=== Top Cards: {result['color_name']}{mode_str} {bracket_str} ===")
     print(f"Based on {result['deck_count']} decks\n")
 
     # Display order for categories
@@ -245,7 +264,8 @@ def cmd_curve(args):
     """Show mana curve analysis."""
     conn = init_db()
     colors = list(args.colors.upper()) if args.colors else None
-    result = get_curve_profile(conn, color_identity=colors, bracket=args.bracket, commander_cmc=args.cmc)
+    color_mode = _resolve_color_mode(args)
+    result = get_curve_profile(conn, color_identity=colors, bracket=args.bracket, commander_cmc=args.cmc, color_mode=color_mode)
 
     if "error" in result:
         print(f"Error: {result['error']}")
@@ -268,7 +288,8 @@ def cmd_categories(args):
     """Show category distribution analysis."""
     conn = init_db()
     colors = list(args.colors.upper()) if args.colors else None
-    result = get_category_distribution(conn, color_identity=colors, bracket=args.bracket)
+    color_mode = _resolve_color_mode(args)
+    result = get_category_distribution(conn, color_identity=colors, bracket=args.bracket, color_mode=color_mode)
 
     if "error" in result:
         print(f"Error: {result['error']}")
@@ -287,9 +308,10 @@ def cmd_packages(args):
     """Detect card packages."""
     conn = init_db()
     colors = list(args.colors.upper()) if args.colors else None
+    color_mode = _resolve_color_mode(args)
     result = find_packages(
         conn, color_identity=colors, bracket=args.bracket,
-        min_co_occurrence=args.threshold, min_cards=args.min_cards
+        min_co_occurrence=args.threshold, min_cards=args.min_cards, color_mode=color_mode
     )
 
     if "error" in result:
@@ -314,7 +336,8 @@ def cmd_compare(args):
     """Compare two brackets."""
     conn = init_db()
     colors = list(args.colors.upper())
-    result = compare_brackets(conn, colors, args.bracket_a, args.bracket_b)
+    color_mode = _resolve_color_mode(args)
+    result = compare_brackets(conn, colors, args.bracket_a, args.bracket_b, color_mode=color_mode)
 
     if "error" in result:
         print(f"Error: {result['error']}")
@@ -352,6 +375,59 @@ def cmd_ramp(args):
         print(f"\nMost popular ramp cards:")
         for i, card in enumerate(result["top_ramp_cards"], 1):
             print(f"  {i:>2}. {card['name']:<35} {card['percentage']:>5.1f}%")
+
+
+def cmd_cmc_curve(args):
+    """Show how commander CMC correlates with curve shape and card choices."""
+    conn = init_db()
+    colors = list(args.colors.upper()) if args.colors else None
+    color_mode = _resolve_color_mode(args)
+    result = get_cmc_curve_correlation(conn, color_identity=colors, bracket=args.bracket, color_mode=color_mode)
+
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Commander CMC vs Curve Analysis ===")
+    print(f"Based on {result['deck_count']} decks\n")
+
+    for cmc_val in sorted(result["by_commander_cmc"].keys()):
+        data = result["by_commander_cmc"][cmc_val]
+        commanders = ", ".join(data["commanders"][:4])
+        if len(data["commanders"]) > 4:
+            commanders += f" +{len(data['commanders']) - 4} more"
+
+        print(f"{'='*70}")
+        print(f"  COMMANDER CMC {cmc_val}  ({data['deck_count']} decks)")
+        print(f"  Commanders: {commanders}")
+        print(f"  Avg deck CMC: {data['avg_deck_cmc']:.2f} | Ramp: {data['avg_ramp']:.1f} | "
+              f"Draw: {data['avg_draw']:.1f} | Lands: {data['avg_lands']:.1f}")
+
+        # Curve visual
+        print(f"\n  Curve:")
+        for bucket in range(7):
+            key = str(bucket)
+            val = data["avg_curve"].get(key, 0)
+            label = f"  {bucket}" if bucket < 6 else " 6+"
+            bar = "█" * int(val) + ("▌" if val % 1 >= 0.5 else "")
+            print(f"    {label} CMC: {val:>5.1f}  {bar}")
+
+        # Top spells by CMC bucket
+        if args.spells:
+            print(f"\n  Top spells by CMC slot:")
+            for bucket in range(7):
+                key = str(bucket)
+                spells = data["top_spells_by_cmc"].get(key, [])
+                if not spells:
+                    continue
+                label = f"{bucket}" if bucket < 6 else "6+"
+                print(f"\n    --- {label} CMC ---")
+                for s in spells[:args.top_n]:
+                    cats = ", ".join(c for c in s["categories"] if c not in ("other", "land"))
+                    cat_str = f" [{cats}]" if cats else ""
+                    print(f"      {s['name']:<32} {s['pct']:>5.1f}%  ({s['count']}/{data['deck_count']}){cat_str}")
+
+        print()
 
 
 def cmd_categorize(args):
@@ -488,46 +564,51 @@ def main():
 
     # list
     p_list = subparsers.add_parser("list", help="List decks in database")
-    p_list.add_argument("-c", "--colors", help="Filter by color identity (e.g., UR, BG)")
-    p_list.add_argument("-b", "--bracket", type=int, help="Filter by bracket")
+    _add_color_args(p_list)
 
     # summary
     subparsers.add_parser("summary", help="Show database summary")
 
     # staples
     p_staples = subparsers.add_parser("staples", help="Find staple cards")
-    p_staples.add_argument("-c", "--colors", help="Color identity (e.g., UR, WBG)")
-    p_staples.add_argument("-b", "--bracket", type=int, help="Bracket level")
+    _add_color_args(p_staples)
     p_staples.add_argument("-l", "--limit", type=int, default=50, help="Total card limit")
     p_staples.add_argument("--limit-per-cat", type=int, default=10, help="Cards per category")
 
     # curve
     p_curve = subparsers.add_parser("curve", help="Mana curve analysis")
-    p_curve.add_argument("-c", "--colors", help="Color identity")
-    p_curve.add_argument("-b", "--bracket", type=int, help="Bracket level")
+    _add_color_args(p_curve)
     p_curve.add_argument("--cmc", type=int, help="Filter by commander CMC")
 
     # categories
     p_cats = subparsers.add_parser("categories", help="Category distribution analysis")
-    p_cats.add_argument("-c", "--colors", help="Color identity")
-    p_cats.add_argument("-b", "--bracket", type=int, help="Bracket level")
+    _add_color_args(p_cats)
 
     # packages
     p_pkgs = subparsers.add_parser("packages", help="Detect card packages")
-    p_pkgs.add_argument("-c", "--colors", help="Color identity")
-    p_pkgs.add_argument("-b", "--bracket", type=int, help="Bracket level")
+    _add_color_args(p_pkgs)
     p_pkgs.add_argument("--threshold", type=float, default=0.7, help="Min co-occurrence (0.0-1.0)")
     p_pkgs.add_argument("--min-cards", type=int, default=3, help="Min cards per package")
 
     # compare
     p_comp = subparsers.add_parser("compare", help="Compare two brackets")
     p_comp.add_argument("-c", "--colors", required=True, help="Color identity")
+    p_comp.add_argument("--include", action="store_true",
+                        help="Match any deck containing these colors")
     p_comp.add_argument("bracket_a", type=int, help="First bracket")
     p_comp.add_argument("bracket_b", type=int, help="Second bracket")
 
     # ramp
     p_ramp = subparsers.add_parser("ramp", help="Ramp analysis by commander CMC")
     p_ramp.add_argument("cmc", type=int, help="Commander CMC")
+
+    # cmc-curve
+    p_cmc = subparsers.add_parser("cmc-curve", help="Commander CMC vs curve correlation analysis")
+    _add_color_args(p_cmc)
+    p_cmc.add_argument("--spells", action="store_true",
+                       help="Show top spells at each CMC slot")
+    p_cmc.add_argument("--top-n", type=int, default=5,
+                       help="Number of spells to show per CMC slot (default 5)")
 
     # categorize (LLM)
     p_cat = subparsers.add_parser("categorize", help="LLM-categorize uncategorized cards")
@@ -559,6 +640,7 @@ def main():
         "packages": cmd_packages,
         "compare": cmd_compare,
         "ramp": cmd_ramp,
+        "cmc-curve": cmd_cmc_curve,
         "categorize": cmd_categorize,
         "tag": cmd_tag,
     }

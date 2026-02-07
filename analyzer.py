@@ -8,15 +8,38 @@ def _color_key(colors):
     return "".join(sorted(colors, key=lambda c: "WUBRG".index(c) if c in "WUBRG" else 99))
 
 
-def _get_matching_deck_ids(conn, color_identity=None, bracket=None, commander_cmc=None, commander_name=None):
-    """Get deck IDs matching the given filters."""
+def _get_matching_deck_ids(conn, color_identity=None, bracket=None, commander_cmc=None,
+                           commander_name=None, color_mode="exact"):
+    """Get deck IDs matching the given filters.
+
+    color_mode options:
+        "exact"    — color_identity_key must match exactly (e.g., G = mono-green only)
+        "contains" — deck must contain ALL specified colors (e.g., G = any deck with green)
+        "subset"   — deck colors must be a subset of specified colors (e.g., RG = mono-R, mono-G, or RG)
+    """
     conditions = []
     params = []
 
     if color_identity is not None:
-        key = _color_key(color_identity)
-        conditions.append("color_identity_key = ?")
-        params.append(key)
+        if color_mode == "exact":
+            key = _color_key(color_identity)
+            conditions.append("color_identity_key = ?")
+            params.append(key)
+        elif color_mode == "contains":
+            # Every specified color must appear in the deck's color_identity_key
+            for color in color_identity:
+                conditions.append("color_identity_key LIKE ?")
+                params.append(f"%{color}%")
+        elif color_mode == "subset":
+            # Deck colors must only contain colors from the specified set
+            key = _color_key(color_identity)
+            allowed = set(key)
+            # Build a regex-like filter: every char in color_identity_key must be in allowed
+            # SQLite doesn't have great regex, so we exclude any color NOT in the set
+            for color in "WUBRG":
+                if color not in allowed:
+                    conditions.append("color_identity_key NOT LIKE ?")
+                    params.append(f"%{color}%")
 
     if bracket is not None:
         conditions.append("bracket = ?")
@@ -53,12 +76,12 @@ def _color_name(key):
     return names.get(key, key)
 
 
-def get_top_cards(conn, color_identity=None, bracket=None, limit=50, min_appearances=2):
+def get_top_cards(conn, color_identity=None, bracket=None, limit=50, min_appearances=2, color_mode="exact"):
     """
     Find the most commonly played cards across matching decks.
     Returns cards grouped by category with frequency data.
     """
-    deck_ids = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket)
+    deck_ids = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket, color_mode=color_mode)
     if not deck_ids:
         return {"error": "No matching decks found", "deck_count": 0}
 
@@ -105,13 +128,14 @@ def get_top_cards(conn, color_identity=None, bracket=None, limit=50, min_appeara
     }
 
 
-def get_curve_profile(conn, color_identity=None, bracket=None, commander_cmc=None):
+def get_curve_profile(conn, color_identity=None, bracket=None, commander_cmc=None, color_mode="exact"):
     """
     Analyze mana curve distribution across matching decks.
     Returns average curve and range.
     """
     deck_ids = _get_matching_deck_ids(
-        conn, color_identity=color_identity, bracket=bracket, commander_cmc=commander_cmc
+        conn, color_identity=color_identity, bracket=bracket, commander_cmc=commander_cmc,
+        color_mode=color_mode
     )
     if not deck_ids:
         return {"error": "No matching decks found", "deck_count": 0}
@@ -145,11 +169,11 @@ def get_curve_profile(conn, color_identity=None, bracket=None, commander_cmc=Non
     }
 
 
-def get_category_distribution(conn, color_identity=None, bracket=None):
+def get_category_distribution(conn, color_identity=None, bracket=None, color_mode="exact"):
     """
     Analyze how many slots decks dedicate to each category.
     """
-    deck_ids = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket)
+    deck_ids = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket, color_mode=color_mode)
     if not deck_ids:
         return {"error": "No matching decks found", "deck_count": 0}
 
@@ -179,12 +203,12 @@ def get_category_distribution(conn, color_identity=None, bracket=None):
     }
 
 
-def find_packages(conn, color_identity=None, bracket=None, min_co_occurrence=0.7, min_cards=3):
+def find_packages(conn, color_identity=None, bracket=None, min_co_occurrence=0.7, min_cards=3, color_mode="exact"):
     """
     Find groups of cards that frequently appear together.
     Uses a simple co-occurrence approach.
     """
-    deck_ids = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket)
+    deck_ids = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket, color_mode=color_mode)
     if len(deck_ids) < 3:
         return {"error": "Need at least 3 matching decks for package detection", "deck_count": len(deck_ids)}
 
@@ -265,13 +289,13 @@ def find_packages(conn, color_identity=None, bracket=None, min_co_occurrence=0.7
     }
 
 
-def compare_brackets(conn, color_identity, bracket_a, bracket_b):
+def compare_brackets(conn, color_identity, bracket_a, bracket_b, color_mode="exact"):
     """
     Compare two bracket levels within the same color identity.
     Finds cards that differentiate the brackets.
     """
-    ids_a = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket_a)
-    ids_b = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket_b)
+    ids_a = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket_a, color_mode=color_mode)
+    ids_b = _get_matching_deck_ids(conn, color_identity=color_identity, bracket=bracket_b, color_mode=color_mode)
 
     if not ids_a or not ids_b:
         return {
@@ -368,15 +392,26 @@ def get_ramp_by_commander_cmc(conn, cmc):
     }
 
 
-def list_decks(conn, color_identity=None, bracket=None, limit=50):
+def list_decks(conn, color_identity=None, bracket=None, limit=50, color_mode="exact"):
     """List decks in the database with optional filters."""
     conditions = []
     params = []
 
     if color_identity is not None:
-        key = _color_key(color_identity)
-        conditions.append("color_identity_key = ?")
-        params.append(key)
+        if color_mode == "exact":
+            key = _color_key(color_identity)
+            conditions.append("color_identity_key = ?")
+            params.append(key)
+        elif color_mode == "contains":
+            for color in color_identity:
+                conditions.append("color_identity_key LIKE ?")
+                params.append(f"%{color}%")
+        elif color_mode == "subset":
+            allowed = set(_color_key(color_identity))
+            for color in "WUBRG":
+                if color not in allowed:
+                    conditions.append("color_identity_key NOT LIKE ?")
+                    params.append(f"%{color}%")
     if bracket is not None:
         conditions.append("bracket = ?")
         params.append(bracket)
@@ -392,6 +427,115 @@ def list_decks(conn, color_identity=None, bracket=None, limit=50):
     """, params + [limit]).fetchall()
 
     return [dict(row) for row in rows]
+
+
+def get_cmc_curve_correlation(conn, color_identity=None, bracket=None, color_mode="exact"):
+    """
+    Analyze how commander CMC correlates with mana curve shape and card choices.
+    Groups decks by commander CMC and compares curves, ramp counts, and
+    which spells appear at each point on the curve.
+    """
+    deck_ids = _get_matching_deck_ids(
+        conn, color_identity=color_identity, bracket=bracket, color_mode=color_mode
+    )
+    if not deck_ids:
+        return {"error": "No matching decks found", "deck_count": 0}
+
+    # Group decks by commander CMC
+    cmc_groups = defaultdict(list)
+    for did in deck_ids:
+        row = conn.execute(
+            "SELECT id, commander_name, commander_cmc, curve_json, category_counts_json, "
+            "land_count, avg_cmc FROM decks WHERE id = ?", (did,)
+        ).fetchone()
+        if row:
+            cmc_bucket = int(row["commander_cmc"])
+            cmc_groups[cmc_bucket].append(dict(row))
+
+    if not cmc_groups:
+        return {"error": "No curve data available", "deck_count": len(deck_ids)}
+
+    results = {}
+    for cmc_val in sorted(cmc_groups.keys()):
+        group = cmc_groups[cmc_val]
+        n = len(group)
+
+        # Aggregate curves
+        curves = [json.loads(d["curve_json"]) for d in group if d["curve_json"]]
+        avg_curve = {}
+        for bucket in range(7):
+            key = str(bucket)
+            values = [c.get(key, 0) for c in curves]
+            avg_curve[key] = round(sum(values) / len(values), 1) if values else 0
+
+        # Aggregate category counts
+        ramp_counts = []
+        draw_counts = []
+        land_counts = []
+        avg_cmcs = []
+        for d in group:
+            cats = json.loads(d["category_counts_json"]) if d["category_counts_json"] else {}
+            ramp_counts.append(cats.get("ramp", 0))
+            draw_counts.append(cats.get("draw", 0))
+            land_counts.append(d["land_count"] or 0)
+            avg_cmcs.append(d["avg_cmc"] or 0)
+
+        # Get the most common spells at each CMC bucket in these decks
+        placeholders = ",".join("?" * len([d["id"] for d in group]))
+        group_ids = [d["id"] for d in group]
+
+        spells_by_cmc = {}
+        for bucket in range(7):
+            if bucket < 6:
+                cmc_filter = "c.cmc = ?"
+                cmc_param = bucket
+            else:
+                cmc_filter = "c.cmc >= ?"
+                cmc_param = 6
+
+            rows = conn.execute(f"""
+                SELECT dc.card_name, c.categories, c.type_line,
+                       COUNT(DISTINCT dc.deck_id) as cnt
+                FROM deck_cards dc
+                JOIN cards c ON dc.card_name = c.name
+                WHERE dc.deck_id IN ({placeholders})
+                  AND dc.board = 'mainboard'
+                  AND c.is_land = 0
+                  AND {cmc_filter}
+                GROUP BY dc.card_name
+                ORDER BY cnt DESC
+                LIMIT 8
+            """, group_ids + [cmc_param]).fetchall()
+
+            spells_by_cmc[str(bucket)] = [
+                {
+                    "name": r["card_name"],
+                    "count": r["cnt"],
+                    "pct": round(r["cnt"] / n * 100, 1),
+                    "categories": json.loads(r["categories"]) if r["categories"] else [],
+                    "type_line": r["type_line"] or "",
+                }
+                for r in rows
+            ]
+
+        results[cmc_val] = {
+            "commander_cmc": cmc_val,
+            "deck_count": n,
+            "commanders": list(set(d["commander_name"] for d in group)),
+            "avg_deck_cmc": round(sum(avg_cmcs) / n, 2) if avg_cmcs else 0,
+            "avg_curve": avg_curve,
+            "avg_ramp": round(sum(ramp_counts) / n, 1) if ramp_counts else 0,
+            "avg_draw": round(sum(draw_counts) / n, 1) if draw_counts else 0,
+            "avg_lands": round(sum(land_counts) / n, 1) if land_counts else 0,
+            "top_spells_by_cmc": spells_by_cmc,
+        }
+
+    return {
+        "color_identity": color_identity or "ALL",
+        "bracket": bracket,
+        "deck_count": len(deck_ids),
+        "by_commander_cmc": results,
+    }
 
 
 def get_db_summary(conn):
